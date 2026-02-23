@@ -25,11 +25,9 @@ bot = Bot(token=API_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MAR
 scheduler = AsyncioScheduler()
 posted_urls = set()
 
-# --- ФУНКЦИЯ ПЕРЕВОДА ---
 def translate_to_russian(text):
     if not text or len(text) < 5: return "Эстетичный AI арт"
     try:
-        # Берем только начало для краткого описания
         short_text = (text[:150] + '...') if len(text) > 150 else text
         base_url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=ru&dt=t&q="
         response = requests.get(base_url + urllib.parse.quote(short_text), timeout=5)
@@ -38,9 +36,8 @@ def translate_to_russian(text):
     except: pass
     return "Детализированный AI промт"
 
-# --- WEB SERVER ---
 async def handle(request):
-    return web.Response(text="Bot is Live: Pinterest, Lexica, CivitAI sources added.")
+    return web.Response(text="Bot is running! Filtering news, only Image Prompts.")
 
 async def start_web_server():
     app = web.Application()
@@ -51,24 +48,19 @@ async def start_web_server():
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
 
-# --- ЛОГИКА ПОИСКА ПРОМТОВ ---
 def get_ai_content():
-    # Список источников, включая зеркала Pinterest, Lexica и CivitAI
     subreddits = [
-        'AiGeminiPhotoPrompts', # Промты как на твоих скриншотах
-        'PromptHero',           # База с prompthero.com
-        'lexica',               # База с lexica.art
-        'civitai',              # База с civitai.com
-        'StableDiffusion',      # Профессиональные сложные промты
-        'AI_Car_Design',        # Только машины
-        'PinterestAI'           # Эстетика Pinterest
+        'AiGeminiPhotoPrompts', 'PromptHero', 'lexica', 
+        'civitai', 'StableDiffusion', 'AI_Car_Design'
     ]
     sub = random.choice(subreddits)
     url = f"https://www.reddit.com/r/{sub}/hot.json?limit=100"
-    headers = {'User-agent': 'AI-Mega-Prompt-Bot-v16'}
+    headers = {'User-agent': 'AI-Mega-Prompt-Bot-v17'}
     
-    people_keys = ['woman', 'girl', 'man', 'portrait', 'model', 'human', 'face', 'lady']
+    people_keys = ['woman', 'girl', 'man', 'portrait', 'model', 'human', 'face', 'lady', 'style']
     car_keys = ['car', 'supercar', 'vehicle', 'auto', 'porsche', 'ferrari', 'lamborghini']
+    # Слова-маркеры новостей, которые мы будем ИГНОРИРОВАТЬ
+    news_keys = ['released', 'update', 'version', 'download', 'github', 'article', 'software', 'plugin', 'tool']
 
     try:
         response = requests.get(url, headers=headers).json()
@@ -77,17 +69,25 @@ def get_ai_content():
         
         for post in posts:
             data = post['data']
+            
+            # ГЛАВНЫЙ ФИЛЬТР: Пропускаем новости и софт
+            post_hint = data.get('post_hint', '')
+            if post_hint != 'image': # Если это не чистая картинка - пропускаем
+                continue
+                
             img_url = data.get('url', '')
             title = data.get('title', '')
-            body_text = data.get('selftext', '') # Текст внутри поста (там обычно лежат длинные промты)
-            
-            # Выбираем самый длинный текст (заголовок или описание)
+            body_text = data.get('selftext', '')
             full_prompt = body_text if len(body_text) > len(title) else title
             
-            # Фильтр: это картинка? Промт достаточно длинный (как на скринах)?
+            low_prompt = full_prompt.lower()
+            
+            # Проверка на наличие "новостных" слов
+            if any(n in low_prompt for n in news_keys):
+                continue
+
             if any(img_url.endswith(ext) for ext in ['.jpg', '.png', '.jpeg']) and len(full_prompt) > 35:
                 if img_url not in posted_urls:
-                    low_prompt = full_prompt.lower()
                     is_p = any(k in low_prompt for k in people_keys)
                     is_c = any(k in low_prompt for k in car_keys)
                     
@@ -102,14 +102,13 @@ def escape_md(text):
     for s in symbols: text = text.replace(s, f'\\{s}')
     return text
 
-# --- ПУБЛИКАЦИЯ ---
 async def post_now():
     image_url, prompt, is_car = get_ai_content()
     
     if image_url:
         try:
             russian_desc = translate_to_russian(prompt)
-            # Телеграм ограничивает подпись к фото 1024 символами. Обрезаем, если промт слишком гигантский.
+            # Ограничение длины для Telegram
             display_prompt = prompt if len(prompt) < 850 else prompt[:850] + "..."
             
             clean_prompt = escape_md(display_prompt)
@@ -131,12 +130,7 @@ async def post_now():
             res = requests.get(image_url, timeout=15)
             if res.status_code == 200:
                 photo = types.BufferedInputFile(res.content, filename="art.jpg")
-                await bot.send_photo(
-                    CHANNEL_ID, 
-                    photo=photo, 
-                    caption=caption, 
-                    reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb)
-                )
+                await bot.send_photo(CHANNEL_ID, photo, caption=caption, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb))
         except Exception as e: logging.error(f"Post error: {e}")
 
 async def main():
