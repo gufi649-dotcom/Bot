@@ -1,3 +1,4 @@
 aiogram==2.25.1
 apscheduler
 requests
+aiohttp==3.9.0
