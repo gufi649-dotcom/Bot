@@ -27,18 +27,20 @@ posted_urls = set()
 
 # --- ФУНКЦИЯ ПЕРЕВОДА ---
 def translate_to_russian(text):
+    if not text or len(text) < 5: return "Эстетичный AI арт"
     try:
+        # Берем только начало для краткого описания
+        short_text = (text[:150] + '...') if len(text) > 150 else text
         base_url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=ru&dt=t&q="
-        response = requests.get(base_url + urllib.parse.quote(text), timeout=5)
+        response = requests.get(base_url + urllib.parse.quote(short_text), timeout=5)
         if response.status_code == 200:
             return response.json()[0][0][0]
-    except:
-        pass
-    return text
+    except: pass
+    return "Детализированный AI промт"
 
-# --- WEB SERVER ДЛЯ RENDER (чтобы сервис не засыпал) ---
+# --- WEB SERVER ---
 async def handle(request):
-    return web.Response(text="Bot is running! People & Cars mode.")
+    return web.Response(text="Bot is Live: Pinterest, Lexica, CivitAI sources added.")
 
 async def start_web_server():
     app = web.Application()
@@ -49,23 +51,25 @@ async def start_web_server():
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
 
-# --- ПОИСК КОНТЕНТА (Reddit + Lexica/CivitAI Mirrors) ---
+# --- ЛОГИКА ПОИСКА ПРОМТОВ ---
 def get_ai_content():
+    # Список источников, включая зеркала Pinterest, Lexica и CivitAI
     subreddits = [
-        'midjourney', 'StableDiffusion', 'AI_Car_Design', 
-        'civitai', 'PromptHero', 'lexica'
+        'AiGeminiPhotoPrompts', # Промты как на твоих скриншотах
+        'PromptHero',           # База с prompthero.com
+        'lexica',               # База с lexica.art
+        'civitai',              # База с civitai.com
+        'StableDiffusion',      # Профессиональные сложные промты
+        'AI_Car_Design',        # Только машины
+        'PinterestAI'           # Эстетика Pinterest
     ]
     sub = random.choice(subreddits)
     url = f"https://www.reddit.com/r/{sub}/hot.json?limit=100"
-    headers = {'User-agent': 'AI-Mega-Bot-v12'}
+    headers = {'User-agent': 'AI-Mega-Prompt-Bot-v16'}
     
-    # Ключевые слова только для Людей и Машин
-    people_keys = ['woman', 'girl', 'man', 'boy', 'portrait', 'face', 'model', 'lady', 'human', 'beauty']
-    car_keys = ['car', 'supercar', 'auto', 'vehicle', 'porsche', 'ferrari', 'lamborghini', 'audi', 'bmw', 'sedan']
-    
-    # Исключаем мусор
-    bad_keywords = ['cat', 'dog', 'animal', 'landscape', 'building', 'architecture', 'interior', 'house', 'nature']
-    
+    people_keys = ['woman', 'girl', 'man', 'portrait', 'model', 'human', 'face', 'lady']
+    car_keys = ['car', 'supercar', 'vehicle', 'auto', 'porsche', 'ferrari', 'lamborghini']
+
     try:
         response = requests.get(url, headers=headers).json()
         posts = response['data']['children']
@@ -73,21 +77,24 @@ def get_ai_content():
         
         for post in posts:
             data = post['data']
-            title = data.get('title', '').lower()
             img_url = data.get('url', '')
+            title = data.get('title', '')
+            body_text = data.get('selftext', '') # Текст внутри поста (там обычно лежат длинные промты)
             
-            # Проверка: это картинка?
-            if any(img_url.endswith(ext) for ext in ['.jpg', '.png', '.jpeg']):
+            # Выбираем самый длинный текст (заголовок или описание)
+            full_prompt = body_text if len(body_text) > len(title) else title
+            
+            # Фильтр: это картинка? Промт достаточно длинный (как на скринах)?
+            if any(img_url.endswith(ext) for ext in ['.jpg', '.png', '.jpeg']) and len(full_prompt) > 35:
                 if img_url not in posted_urls:
-                    is_person = any(word in title for word in people_keys)
-                    is_car = any(word in title for word in car_keys)
-                    has_bad = any(word in title for word in bad_keywords)
+                    low_prompt = full_prompt.lower()
+                    is_p = any(k in low_prompt for k in people_keys)
+                    is_c = any(k in low_prompt for k in car_keys)
                     
-                    if (is_person or is_car) and not has_bad:
+                    if (is_p or is_c) and not any(b in low_prompt for b in ['cat', 'dog', 'animal']):
                         posted_urls.add(img_url)
-                        return img_url, data.get('title', ''), is_car
-    except Exception as e:
-        logging.error(f"Reddit error: {e}")
+                        return img_url, full_prompt, is_c
+    except: pass
     return None, None, None
 
 def escape_md(text):
@@ -95,69 +102,49 @@ def escape_md(text):
     for s in symbols: text = text.replace(s, f'\\{s}')
     return text
 
-# --- ГЛАВНАЯ ФУНКЦИЯ ПУБЛИКАЦИИ ---
+# --- ПУБЛИКАЦИЯ ---
 async def post_now():
-    logging.info("Попытка найти новый промт...")
     image_url, prompt, is_car = get_ai_content()
     
     if image_url:
         try:
-            # Перевод и очистка текста
             russian_desc = translate_to_russian(prompt)
-            clean_prompt = escape_md(prompt)
+            # Телеграм ограничивает подпись к фото 1024 символами. Обрезаем, если промт слишком гигантский.
+            display_prompt = prompt if len(prompt) < 850 else prompt[:850] + "..."
+            
+            clean_prompt = escape_md(display_prompt)
             clean_ru = escape_md(russian_desc)
             
-            # Настройка оформления
             icon = "🏎️" if is_car else "👤"
             tags = "\\#cars \\#auto" if is_car else "\\#people \\#portrait"
-            tags += " \\#ai \\#prompts"
+            tags += " \\#ai \\#prompts \\#detailed"
 
             caption = (
                 f"📝 *Описание:* {clean_ru}\n\n"
-                f"{icon} *Prompt \\(copy\\):*\n`{clean_prompt}`\n\n"
-                f"✨ *Community:* @iPromt\\_AI\n"
+                f"{icon} *Detailed Prompt:* \n`{clean_prompt}`\n\n"
+                f"✨ @iPromt\\_AI\n"
                 f"{tags}"
             )
             
-            kb = [[types.InlineKeyboardButton(text="🔥 Подписаться на iPromt AI", url="https://t.me/iPromt_AI")]]
+            kb = [[types.InlineKeyboardButton(text="🔥 Подписаться", url="https://t.me/iPromt_AI")]]
             
-            # СКАЧИВАНИЕ КАРТИНКИ (чтобы не было ошибки "Not viewable in region")
-            photo_res = requests.get(image_url, timeout=15)
-            if photo_res.status_code == 200:
-                photo_file = types.BufferedInputFile(photo_res.content, filename="image.jpg")
+            res = requests.get(image_url, timeout=15)
+            if res.status_code == 200:
+                photo = types.BufferedInputFile(res.content, filename="art.jpg")
                 await bot.send_photo(
-                    chat_id=CHANNEL_ID, 
-                    photo=photo_file, 
-                    caption=caption,
+                    CHANNEL_ID, 
+                    photo=photo, 
+                    caption=caption, 
                     reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb)
                 )
-                logging.info("Пост успешно опубликован!")
-            else:
-                logging.error(f"Не удалось скачать картинку, статус: {photo_res.status_code}")
-                
-        except Exception as e:
-            logging.error(f"Ошибка при отправке в Телеграм: {e}")
-    else:
-        logging.warning("Контент не найден, попробую в следующий раз.")
+        except Exception as e: logging.error(f"Post error: {e}")
 
-# --- ЗАПУСК ---
 async def main():
-    # Запускаем веб-сервер для Render
     await start_web_server()
-    
-    # Настраиваем планировщик
     scheduler.add_job(post_now, 'interval', seconds=INTERVAL_SECONDS)
     scheduler.start()
-    
-    # Сразу первый пост после запуска
     await post_now()
-    
-    # Держим бота запущенным
-    while True:
-        await asyncio.sleep(3600)
+    while True: await asyncio.sleep(3600)
 
 if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logging.info("Бот остановлен.")
+    asyncio.run(main())
