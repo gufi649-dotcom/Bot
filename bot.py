@@ -2,8 +2,8 @@ import asyncio
 import logging
 import requests
 import random
-from aiogram import Bot, types
-from aiogram.utils import markdown
+from aiogram import Bot, Dispatcher, types
+from aiogram.enums import ParseMode
 from apscheduler.schedulers.asyncio import AsyncioScheduler
 
 # --- ТВОИ ДАННЫЕ ---
@@ -14,19 +14,17 @@ INTERVAL_SECONDS = (24 * 60 * 60) // POSTS_PER_DAY
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
-scheduler = AsyncioScheduler(timezone="UTC")
+dp = Dispatcher()
+scheduler = AsyncioScheduler()
 
 posted_urls = set()
 
 def get_ai_content():
-    # Список сабреддитов для разнообразия
     subreddits = ['midjourney', 'StableDiffusion', 'DALL-E', 'aiArt']
     sub = random.choice(subreddits)
     url = f"https://www.reddit.com/r/{sub}/hot.json?limit=50"
-    headers = {'User-agent': 'AI-Prompt-Bot-v2'}
-    
-    # Ключевые слова для людей и пар
-    keywords = ['woman', 'man', 'couple', 'girl', 'boy', 'portrait', 'people', 'love', 'model', 'human', 'beauty']
+    headers = {'User-agent': 'AI-Prompt-Bot-v3'}
+    keywords = ['woman', 'man', 'couple', 'girl', 'boy', 'portrait', 'people', 'love', 'model', 'human']
     
     try:
         response = requests.get(url, headers=headers).json()
@@ -50,43 +48,37 @@ async def post_now():
     image, prompt = get_ai_content()
     if image:
         try:
-            # Форматируем текст: промпт в коде `text` для копирования одним кликом
+            # Очистка текста для MarkdownV2 (простой вариант)
+            clean_prompt = prompt.replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace('`', '\\`')
+            
             caption = (
                 f"👤 **Prompt (click to copy):**\n"
-                f"`{prompt}`\n\n"
+                f"`{clean_prompt}`\n\n"
                 f"✨ **Community:** @iPromt_AI\n"
                 f"#ai #people #prompts"
             )
             
-            # Добавляем кнопку-ссылку на сам канал или на обсуждение
-            keyboard = types.InlineKeyboardMarkup()
-            button = types.InlineKeyboardButton(text="🔥 Подписаться на iPromt AI", url="https://t.me/iPromt_AI")
-            keyboard.add(button)
+            kb = [[types.InlineKeyboardButton(text="🔥 Подписаться на iPromt AI", url="https://t.me/iPromt_AI")]]
+            keyboard = types.InlineKeyboardMarkup(inline_keyboard=kb)
 
             await bot.send_photo(
                 chat_id=CHANNEL_ID, 
                 photo=image, 
                 caption=caption, 
-                parse_mode="MarkdownV2", # Используем V2 для лучшей поддержки моноширинного текста
+                parse_mode=ParseMode.MARKDOWN_V2,
                 reply_markup=keyboard
             )
-            logging.info("Пост с кнопкой отправлен!")
+            logging.info("Пост опубликован!")
         except Exception as e:
             logging.error(f"Ошибка отправки: {e}")
 
 async def main():
-    # Первый пост сразу
-    await post_now()
-    
-    # Расписание
+    await post_now() # Первый пост
     scheduler.add_job(post_now, 'interval', seconds=INTERVAL_SECONDS)
     scheduler.start()
-    
     while True:
         await asyncio.sleep(3600)
 
 if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        pass
+    asyncio.run(main())
+ 
