@@ -23,20 +23,21 @@ posted_urls = set()
 
 async def get_ai_generated_prompt(image_url):
     try:
-        img_resp = requests.get(image_url, timeout=10)
+        img_resp = requests.get(image_url, timeout=15)
         if img_resp.status_code != 200: return None
         
         base64_image = base64.b64encode(img_resp.content).decode('utf-8')
+        # Используем v1beta для лучшей поддержки safetySettings
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         
         payload = {
             "contents": [{
                 "parts": [
-                    {"text": "Write a highly detailed AI art prompt for this image. English only, no preamble, no quotes."},
+                    {"text": "Describe this image as a detailed prompt for Midjourney. English only, no intro."},
                     {"inline_data": {"mime_type": "image/jpeg", "data": base64_image}}
                 ]
             }],
-            "safetySettings": [ # Отключаем излишнюю цензуру для артов
+            "safetySettings": [
                 {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
                 {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
                 {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
@@ -44,16 +45,15 @@ async def get_ai_generated_prompt(image_url):
             ]
         }
         
-        r = requests.post(url, json=payload, timeout=20)
+        r = requests.post(url, json=payload, timeout=25)
         res_json = r.json()
         
-        if 'candidates' in res_json and res_json['candidates'][0].get('content'):
+        if 'candidates' in res_json:
             return res_json['candidates'][0]['content']['parts'][0]['text'].strip()
-        else:
-            logging.error(f"Gemini rejection or error: {res_json}")
-            return None
+        logging.error(f"Gemini error response: {res_json}")
+        return None
     except Exception as e:
-        logging.error(f"Gemini detail error: {e}")
+        logging.error(f"Gemini exception: {e}")
         return None
 
 def escape_md(text):
@@ -62,43 +62,67 @@ def escape_md(text):
     return text
 
 async def post_now():
-    subs = ['Midjourney', 'AIArt', 'StableDiffusion']
-    url = f"https://www.reddit.com/r/{random.choice(subs)}/hot.json?limit=10"
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    # Список сабреддитов
+    subs = ['Midjourney', 'AIArt', 'StableDiffusion', 'ImaginaryLandscapes']
+    url = f"https://www.reddit.com/r/{random.choice(subs)}/hot.json?limit=15"
+    
+    # Имитируем реальный браузер
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+    
     try:
-        r = requests.get(url, headers=headers, timeout=10)
+        r = requests.get(url, headers=headers, timeout=15)
+        if r.status_code != 200:
+            logging.error(f"Reddit error {r.status_code}: {r.text}")
+            return False
+            
         posts = r.json().get('data', {}).get('children', [])
         random.shuffle(posts)
+        
         for post in posts:
             data = post.get('data', {})
             img_url = data.get('url', '')
+            
             if any(img_url.lower().endswith(ext) for ext in ['.jpg', '.png', '.jpeg']):
                 if img_url not in posted_urls:
+                    logging.info(f"Processing image: {img_url}")
                     prompt = await get_ai_generated_prompt(img_url)
+                    
                     if prompt:
                         posted_urls.add(img_url)
-                        caption = f"🖼 *Visual AI Analysis*\n\n👤 *Prompt:* `{escape_md(prompt)}`"
-                        photo = types.BufferedInputFile(requests.get(img_url).content, "art.jpg")
+                        clean_prompt = escape_md(prompt)
+                        caption = f"🖼 *Visual AI Analysis*\n\n👤 *Prompt:* `{clean_prompt}`"
+                        
+                        img_data = requests.get(img_url).content
+                        photo = types.BufferedInputFile(img_data, "image.jpg")
+                        
                         await bot.send_photo(CHANNEL_ID, photo, caption=caption)
-                        logging.info("SUCCESS: Posted to Telegram")
+                        logging.info("!!! SUCCESSFUL POST !!!")
                         return True
+        logging.warning("No suitable images found in this batch.")
     except Exception as e:
         logging.error(f"Post error: {e}")
     return False
 
 async def handle(request):
-    return web.Response(text="Bot is Live")
+    return web.Response(text="Bot Operational")
 
 async def on_startup(app):
-    logging.info("Waiting for old instance clean-up...")
-    await asyncio.sleep(20) # Увеличили до 20 секунд
+    logging.info("Waiting for Render to swap instances...")
+    await asyncio.sleep(25) # Еще чуть больше времени
     
-    # Жесткий сброс вебхука
-    await bot.delete_webhook(drop_pending_updates=True)
+    # Пытаемся закрыть старую сессию и сбросить вебхук
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        await bot.get_updates(offset=-1) # "Простукиваем" Telegram
+    except:
+        pass
     
     scheduler.add_job(post_now, 'interval', minutes=25)
     scheduler.start()
     
+    # Запускаем в фоне
     asyncio.create_task(post_now())
     asyncio.create_task(dp.start_polling(bot, skip_updates=True))
 
