@@ -4,6 +4,7 @@ import requests
 import random
 import os
 import base64
+import sys
 from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
@@ -28,28 +29,22 @@ async def get_ai_generated_prompt(image_url):
         
         base64_image = base64.b64encode(img_resp.content).decode('utf-8')
         
-        # FIX: Added 'models/' prefix to the model name
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        # Переход на СТАБИЛЬНУЮ версию v1 и ПРЯМОЙ путь к модели
+        url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         
         payload = {
             "contents": [{
                 "parts": [
-                    {"text": "Describe this image as a detailed prompt for Midjourney. English only, no intro."},
+                    {"text": "Create a detailed AI art prompt for this. English only, no quotes, no intro."},
                     {"inline_data": {"mime_type": "image/jpeg", "data": base64_image}}
                 ]
-            }],
-            "safetySettings": [
-                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
-            ]
+            }]
         }
         
         r = requests.post(url, json=payload, timeout=25)
         res_json = r.json()
         
-        if 'candidates' in res_json and res_json['candidates'][0].get('content'):
+        if 'candidates' in res_json:
             return res_json['candidates'][0]['content']['parts'][0]['text'].strip()
         
         logging.error(f"Gemini API Error: {res_json}")
@@ -66,49 +61,57 @@ def escape_md(text):
 async def post_now():
     subs = ['Midjourney', 'AIArt', 'StableDiffusion']
     url = f"https://www.reddit.com/r/{random.choice(subs)}/hot.json?limit=15"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'}
+    headers = {'User-Agent': 'Mozilla/5.0'}
     
     try:
         r = requests.get(url, headers=headers, timeout=15)
-        posts = r.json().get('data', {}).get('children', [])
+        data_json = r.json()
+        posts = data_json.get('data', {}).get('children', [])
         random.shuffle(posts)
         
         for post in posts:
-            data = post.get('data', {})
-            img_url = data.get('url', '')
+            img_url = post.get('data', {}).get('url', '')
             if any(img_url.lower().endswith(ext) for ext in ['.jpg', '.png', '.jpeg']):
                 if img_url not in posted_urls:
-                    logging.info(f"Attempting: {img_url}")
                     prompt = await get_ai_generated_prompt(img_url)
                     if prompt:
                         posted_urls.add(img_url)
                         caption = f"🖼 *Visual AI Analysis*\n\n👤 *Prompt:* `{escape_md(prompt)}`"
                         photo = types.BufferedInputFile(requests.get(img_url).content, "image.jpg")
                         await bot.send_photo(CHANNEL_ID, photo, caption=caption)
-                        logging.info("!!! SUCCESS !!!")
+                        logging.info("SUCCESSFUL POST")
                         return True
     except Exception as e:
-        logging.error(f"Task Error: {e}")
+        logging.error(f"Post error: {e}")
     return False
 
 async def handle(request):
-    return web.Response(text="Bot Live")
+    return web.Response(text="Bot Status: OK")
 
 async def on_startup(app):
-    logging.info("Initializing heavy startup sequence...")
+    logging.info("Startup sequence initiated...")
     
-    # Force close any existing sessions
-    await bot.session.close()
-    await asyncio.sleep(30) # Wait for Render's old container to definitely stop
+    # 1. Даем Render время на переключение
+    await asyncio.sleep(15) 
     
-    # Re-open and clear
-    await bot.delete_webhook(drop_pending_updates=True)
-    
+    # 2. Очистка вебхука
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+    except Exception as e:
+        logging.warning(f"Webhook delete failed: {e}")
+
     scheduler.add_job(post_now, 'interval', minutes=25)
     scheduler.start()
     
     asyncio.create_task(post_now())
-    asyncio.create_task(dp.start_polling(bot, skip_updates=True))
+    
+    # 3. Запуск с автоматическим выходом при конфликте
+    try:
+        await dp.start_polling(bot, skip_updates=True)
+    except Exception as e:
+        if "Conflict" in str(e):
+            logging.error("CRITICAL CONFLICT: Restarting...")
+            sys.exit(1) # Render перезапустит контейнер автоматически
 
 async def create_app():
     app = web.Application()
@@ -119,3 +122,4 @@ async def create_app():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
     web.run_app(create_app(), host='0.0.0.0', port=port)
+ 
