@@ -2,4 +2,4 @@ aiogram
 apscheduler
 requests
 aiohttp
-pip install -U google-generativeai
+google-generativeai
