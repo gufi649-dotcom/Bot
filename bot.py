@@ -18,7 +18,7 @@ CHANNEL_ID = '@iPromt_AI'
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Настройка Gemini через официальную библиотеку
+# Настройка Gemini
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
 
@@ -27,6 +27,7 @@ dp = Dispatcher()
 scheduler = AsyncIOScheduler()
 
 def escape_md(text):
+    """Экранирование символов для Markdown V2"""
     for s in r'_*[]()~`>#+-=|{}.!':
         text = text.replace(s, f'\\{s}')
     return text
@@ -34,16 +35,13 @@ def escape_md(text):
 async def get_ai_generated_prompt(image_url):
     """Получение промпта через официальный SDK Google"""
     try:
-        # Скачиваем картинку
         response = requests.get(image_url, timeout=15)
         if response.status_code != 200:
             return None
         
-        # Формируем запрос к ИИ
         img_data = [{'mime_type': 'image/jpeg', 'data': response.content}]
         prompt_text = "Write a one-sentence Midjourney artistic prompt for this image. English only, no intros."
         
-        # Генерация
         result = model.generate_content([prompt_text, img_data[0]])
         if result and result.text:
             return result.text.strip()
@@ -53,6 +51,7 @@ async def get_ai_generated_prompt(image_url):
         return None
 
 async def post_now():
+    """Основная логика публикации"""
     logger.info("Reddit Sweep Started...")
     subs = ['Midjourney', 'AIArt', 'StableDiffusion', 'ImaginaryLandscapes']
     target_sub = random.choice(subs)
@@ -69,7 +68,8 @@ async def post_now():
                 prompt = await get_ai_generated_prompt(img_url)
                 if prompt:
                     caption = f"🖼 *Visual AI Analysis* \(r/{target_sub}\)\n\n👤 *Prompt:* `{escape_md(prompt)}`"
-                    photo = types.BufferedInputFile(requests.get(img_url).content, "image.jpg")
+                    photo_resp = requests.get(img_url)
+                    photo = types.BufferedInputFile(photo_resp.content, filename="image.jpg")
                     await bot.send_photo(CHANNEL_ID, photo, caption=caption)
                     logger.info("SUCCESS: Post sent to Telegram!")
                     return True
@@ -83,18 +83,34 @@ async def handle(request):
     return web.Response(text="Bot is Live")
 
 async def main():
-    # Запуск сервера для прохождения проверки портов Render
+    # 1. Запуск веб-сервера для порта 10000
     app = web.Application()
     app.router.add_get('/', handle)
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.environ.get("PORT", 10000))
-    await web.TCPSite(runner, '0.0.0.0', port).start()
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    logger.info(f"Port {port} bound successfully.")
 
-    # Жесткая очистка вебхука для удаления Conflict
+    # 2. Очистка вебхука
     await bot.delete_webhook(drop_pending_updates=True)
-    logger.info("Webhook cleared. Sleeping 30s to kill old sessions...")
+    logger.info("Webhook cleared. Waiting 30s...")
     await asyncio.sleep(30)
 
-    # Настройка задач
-    scheduler.add_job(post_now,
+    # 3. Настройка планировщика (раз в 25 минут)
+    scheduler.add_job(post_now, 'interval', minutes=25)
+    scheduler.start()
+    
+    # 4. Первый запуск
+    asyncio.create_task(post_now())
+    
+    # 5. Старт поллинга
+    logger.info("Starting polling...")
+    await dp.start_polling(bot)
+
+if __name__ == '__main__':
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot stopped.")
