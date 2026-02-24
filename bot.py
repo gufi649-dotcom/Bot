@@ -27,13 +27,11 @@ dp = Dispatcher()
 scheduler = AsyncIOScheduler()
 
 def escape_md(text):
-    """Экранирование символов для Markdown V2"""
     for s in r'_*[]()~`>#+-=|{}.!':
         text = text.replace(s, f'\\{s}')
     return text
 
 async def get_ai_generated_prompt(image_url):
-    """Получение промпта через официальный SDK Google"""
     try:
         response = requests.get(image_url, timeout=15)
         if response.status_code != 200:
@@ -51,15 +49,29 @@ async def get_ai_generated_prompt(image_url):
         return None
 
 async def post_now():
-    """Основная логика публикации"""
     logger.info("Reddit Sweep Started...")
     subs = ['Midjourney', 'AIArt', 'StableDiffusion', 'ImaginaryLandscapes']
     target_sub = random.choice(subs)
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    
+    # Расширенный User-Agent, чтобы Reddit не ругался
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
     
     try:
         r = requests.get(f"https://www.reddit.com/r/{target_sub}/hot.json?limit=15", headers=headers, timeout=15)
-        posts = r.json().get('data', {}).get('children', [])
+        
+        if r.status_code != 200:
+            logger.warning(f"Reddit returned status {r.status_code}. Possible rate limit.")
+            return False
+
+        data = r.json() # Здесь была ошибка, если Reddit вернул не JSON
+        posts = data.get('data', {}).get('children', [])
+        
+        if not posts:
+            logger.warning("No posts found in Reddit response.")
+            return False
+
         random.shuffle(posts)
         
         for post in posts:
@@ -73,17 +85,15 @@ async def post_now():
                     await bot.send_photo(CHANNEL_ID, photo, caption=caption)
                     logger.info("SUCCESS: Post sent to Telegram!")
                     return True
-        logger.warning("No new images found.")
     except Exception as e:
         logger.error(f"Post error: {e}")
     return False
 
-# --- WEB SERVER (Для Render) ---
+# --- WEB SERVER ---
 async def handle(request):
     return web.Response(text="Bot is Live")
 
 async def main():
-    # 1. Запуск веб-сервера для порта 10000
     app = web.Application()
     app.router.add_get('/', handle)
     runner = web.AppRunner(app)
@@ -91,26 +101,25 @@ async def main():
     port = int(os.environ.get("PORT", 10000))
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
-    logger.info(f"Port {port} bound successfully.")
 
-    # 2. Очистка вебхука
+    # 1. Сначала удаляем вебхук
     await bot.delete_webhook(drop_pending_updates=True)
-    logger.info("Webhook cleared. Waiting 30s...")
-    await asyncio.sleep(30)
+    
+    # 2. Ждем 60 секунд. Это ВАЖНО, чтобы старая копия на Render умерла.
+    logger.info("Waiting 60s for old sessions to expire...")
+    await asyncio.sleep(60)
 
-    # 3. Настройка планировщика (раз в 25 минут)
+    # 3. Запускаем задачи
     scheduler.add_job(post_now, 'interval', minutes=25)
     scheduler.start()
     
-    # 4. Первый запуск
     asyncio.create_task(post_now())
     
-    # 5. Старт поллинга
     logger.info("Starting polling...")
-    await dp.start_polling(bot)
+    await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == '__main__':
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        logger.info("Bot stopped.")
+        pass
