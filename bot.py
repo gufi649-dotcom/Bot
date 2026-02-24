@@ -5,7 +5,7 @@ import random
 import os
 from google import genai
 from google.genai import types as genai_types
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from aiohttp import web
@@ -16,10 +16,12 @@ API_TOKEN = '8309438145:AAFTjTJ9OHgn1tVjqLneqDLT3Q8odMrryLo'
 GEMINI_API_KEY = 'AIzaSyAJngwLCzOjjqFe_EkxQctwm1QT-vZEbrc'
 CHANNEL_ID = '@iPromt_AI'
 
-# Use the explicitly full model path to bypass the 404
-MODEL_NAME = "gemini-1.5-flash" 
+# Инициализация клиента с ПРИНУДИТЕЛЬНОЙ версией v1 (чтобы убрать 404)
+client = genai.Client(
+    api_key=GEMINI_API_KEY,
+    http_options={'api_version': 'v1'}
+)
 
-client = genai.Client(api_key=GEMINI_API_KEY)
 logging.basicConfig(level=logging.INFO)
 
 bot = Bot(token=API_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN_V2))
@@ -29,15 +31,15 @@ posted_urls = set()
 
 async def get_ai_generated_prompt(image_url):
     try:
-        response = requests.get(image_url, timeout=10)
+        response = requests.get(image_url, timeout=15)
         if response.status_code != 200: return None
         
-        # New SDK logic: explicitly using the model via the models.generate_content
+        # Используем простую строку названия модели
         ai_res = client.models.generate_content(
-            model=MODEL_NAME,
+            model="gemini-1.5-flash",
             contents=[
                 genai_types.Part.from_bytes(data=response.content, mime_type="image/jpeg"),
-                "Write a professional AI art prompt for this image. English only. No intro."
+                "Write a professional AI art prompt for this image. English only. No preamble."
             ]
         )
         return ai_res.text.strip()
@@ -53,12 +55,12 @@ def escape_md(text):
 async def post_now():
     subs = ['Midjourney', 'StableDiffusion', 'AIArt']
     url = f"https://www.reddit.com/r/{random.choice(subs)}/hot.json?limit=10"
-    headers = {'User-Agent': f'BananahBot/9.0_{random.randint(1,1000)}'}
+    headers = {'User-Agent': f'PromptGenBot/10.0_{random.randint(1,999)}'}
     try:
         r = requests.get(url, headers=headers, timeout=10)
-        data = r.json().get('data', {}).get('children', [])
-        random.shuffle(data)
-        for post in data:
+        posts = r.json().get('data', {}).get('children', [])
+        random.shuffle(posts)
+        for post in posts:
             img_url = post.get('data', {}).get('url', '')
             if any(img_url.lower().endswith(ext) for ext in ['.jpg', '.png', '.jpeg']):
                 if img_url not in posted_urls:
@@ -68,27 +70,29 @@ async def post_now():
                         caption = f"🖼 *Visual AI Analysis*\n\n👤 *Prompt:* `{escape_md(prompt)}`"
                         photo = types.BufferedInputFile(requests.get(img_url).content, "art.jpg")
                         await bot.send_photo(CHANNEL_ID, photo, caption=caption)
-                        logging.info("Successfully posted!")
+                        logging.info("Post Success!")
                         return True
     except Exception as e:
-        logging.error(f"Reddit error: {e}")
+        logging.error(f"Post Logic Error: {e}")
     return False
 
 async def handle(request):
-    return web.Response(text="Bot Alive")
+    return web.Response(text="Bot is running")
 
 async def on_startup(app):
-    # Wait 5 seconds to let Render finish the 'zero-downtime' transition
-    # This prevents the "Conflict" error with the previous instance
-    logging.info("Waiting for old instances to clear...")
-    await asyncio.sleep(5)
+    # Критично для Render: ждем, пока старая версия бота отключится
+    logging.info("Startup delay to avoid Telegram Conflict...")
+    await asyncio.sleep(10) 
     
+    # Полный сброс всех соединений перед началом
     await bot.delete_webhook(drop_pending_updates=True)
+    
     scheduler.add_job(post_now, 'interval', minutes=25)
     scheduler.start()
     
     asyncio.create_task(post_now())
     asyncio.create_task(dp.start_polling(bot, skip_updates=True))
+    logging.info("Bot fully operational!")
 
 async def create_app():
     app = web.Application()
