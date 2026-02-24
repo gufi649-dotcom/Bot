@@ -11,14 +11,15 @@ from aiogram.client.default import DefaultBotProperties
 from aiohttp import web
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# --- КОНФИГУРАЦИЯ ---
+# --- CONFIG ---
 API_TOKEN = '8309438145:AAFTjTJ9OHgn1tVjqLneqDLT3Q8odMrryLo'
 GEMINI_API_KEY = 'AIzaSyAJngwLCzOjjqFe_EkxQctwm1QT-vZEbrc'
 CHANNEL_ID = '@iPromt_AI'
 
-# Принудительно используем стабильную версию API v1
-client = genai.Client(api_key=GEMINI_API_KEY, http_options={'api_version': 'v1'})
+# Use the explicitly full model path to bypass the 404
+MODEL_NAME = "gemini-1.5-flash" 
 
+client = genai.Client(api_key=GEMINI_API_KEY)
 logging.basicConfig(level=logging.INFO)
 
 bot = Bot(token=API_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN_V2))
@@ -26,22 +27,22 @@ dp = Dispatcher()
 scheduler = AsyncIOScheduler()
 posted_urls = set()
 
-# --- ЛОГИКА ---
 async def get_ai_generated_prompt(image_url):
     try:
         response = requests.get(image_url, timeout=10)
         if response.status_code != 200: return None
         
+        # New SDK logic: explicitly using the model via the models.generate_content
         ai_res = client.models.generate_content(
-            model="gemini-1.5-flash", 
+            model=MODEL_NAME,
             contents=[
-                "Write a highly detailed professional AI art prompt for this image. Output ONLY the English text.",
-                genai_types.Part.from_bytes(data=response.content, mime_type="image/jpeg")
+                genai_types.Part.from_bytes(data=response.content, mime_type="image/jpeg"),
+                "Write a professional AI art prompt for this image. English only. No intro."
             ]
         )
         return ai_res.text.strip()
     except Exception as e:
-        logging.error(f"Gemini API Error: {e}")
+        logging.error(f"Gemini Error: {e}")
         return None
 
 def escape_md(text):
@@ -50,15 +51,13 @@ def escape_md(text):
     return text
 
 async def post_now():
-    subs = ['Midjourney', 'StableDiffusion', 'AIArt', 'DigitalArt']
-    url = f"https://www.reddit.com/r/{random.choice(subs)}/hot.json?limit=15"
-    headers = {'User-Agent': f'BananahBot/8.0_{random.randint(1,1000)}'}
-    
+    subs = ['Midjourney', 'StableDiffusion', 'AIArt']
+    url = f"https://www.reddit.com/r/{random.choice(subs)}/hot.json?limit=10"
+    headers = {'User-Agent': f'BananahBot/9.0_{random.randint(1,1000)}'}
     try:
         r = requests.get(url, headers=headers, timeout=10)
         data = r.json().get('data', {}).get('children', [])
         random.shuffle(data)
-        
         for post in data:
             img_url = post.get('data', {}).get('url', '')
             if any(img_url.lower().endswith(ext) for ext in ['.jpg', '.png', '.jpeg']):
@@ -66,35 +65,30 @@ async def post_now():
                     prompt = await get_ai_generated_prompt(img_url)
                     if prompt:
                         posted_urls.add(img_url)
-                        caption = (
-                            f"🖼 *Visual AI Analysis*\n\n"
-                            f"👤 *Prompt:* `{escape_md(prompt)}`"
-                        )
-                        photo_req = requests.get(img_url)
-                        photo = types.BufferedInputFile(photo_req.content, "art.jpg")
+                        caption = f"🖼 *Visual AI Analysis*\n\n👤 *Prompt:* `{escape_md(prompt)}`"
+                        photo = types.BufferedInputFile(requests.get(img_url).content, "art.jpg")
                         await bot.send_photo(CHANNEL_ID, photo, caption=caption)
-                        logging.info("SUCCESS: Post sent!")
+                        logging.info("Successfully posted!")
                         return True
     except Exception as e:
-        logging.error(f"Reddit Loop Error: {e}")
+        logging.error(f"Reddit error: {e}")
     return False
 
-# --- WEB SERVER & STARTUP ---
 async def handle(request):
-    return web.Response(text="Bot is operational")
+    return web.Response(text="Bot Alive")
 
 async def on_startup(app):
-    # Удалили проблемный get_session()
-    # Просто сбрасываем вебхук и запускаем процессы
-    await bot.delete_webhook(drop_pending_updates=True)
+    # Wait 5 seconds to let Render finish the 'zero-downtime' transition
+    # This prevents the "Conflict" error with the previous instance
+    logging.info("Waiting for old instances to clear...")
+    await asyncio.sleep(5)
     
+    await bot.delete_webhook(drop_pending_updates=True)
     scheduler.add_job(post_now, 'interval', minutes=25)
     scheduler.start()
     
-    # Запуск задач в фоне
     asyncio.create_task(post_now())
     asyncio.create_task(dp.start_polling(bot, skip_updates=True))
-    logging.info("Bot started successfully!")
 
 async def create_app():
     app = web.Application()
