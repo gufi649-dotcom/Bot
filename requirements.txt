@@ -1,5 +1,5 @@
 aiogram
 apscheduler
 requests
+google-genai
 aiohttp
-google-generativeai
