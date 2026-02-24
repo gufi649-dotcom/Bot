@@ -26,12 +26,12 @@ dp = Dispatcher()
 scheduler = AsyncIOScheduler()
 posted_urls = set()
 
+# --- ЛОГИКА ---
 async def get_ai_generated_prompt(image_url):
     try:
         response = requests.get(image_url, timeout=10)
         if response.status_code != 200: return None
         
-        # Используем gemini-1.5-flash без суффиксов, это самая стабильная ссылка
         ai_res = client.models.generate_content(
             model="gemini-1.5-flash", 
             contents=[
@@ -52,7 +52,7 @@ def escape_md(text):
 async def post_now():
     subs = ['Midjourney', 'StableDiffusion', 'AIArt', 'DigitalArt']
     url = f"https://www.reddit.com/r/{random.choice(subs)}/hot.json?limit=15"
-    headers = {'User-Agent': f'BananahBot/7.0_{random.randint(1,1000)}'}
+    headers = {'User-Agent': f'BananahBot/8.0_{random.randint(1,1000)}'}
     
     try:
         r = requests.get(url, headers=headers, timeout=10)
@@ -79,19 +79,22 @@ async def post_now():
         logging.error(f"Reddit Loop Error: {e}")
     return False
 
+# --- WEB SERVER & STARTUP ---
 async def handle(request):
     return web.Response(text="Bot is operational")
 
 async def on_startup(app):
-    # Пытаемся закрыть старые сессии перед началом
-    session = await bot.get_session()
-    if session: await session.close()
-    
+    # Удалили проблемный get_session()
+    # Просто сбрасываем вебхук и запускаем процессы
     await bot.delete_webhook(drop_pending_updates=True)
+    
     scheduler.add_job(post_now, 'interval', minutes=25)
     scheduler.start()
+    
+    # Запуск задач в фоне
     asyncio.create_task(post_now())
     asyncio.create_task(dp.start_polling(bot, skip_updates=True))
+    logging.info("Bot started successfully!")
 
 async def create_app():
     app = web.Application()
