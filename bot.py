@@ -3,6 +3,7 @@ import logging
 import requests
 import random
 import os
+import base64
 from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
@@ -20,33 +21,39 @@ dp = Dispatcher()
 scheduler = AsyncIOScheduler()
 posted_urls = set()
 
-# --- ПРЯМОЙ ЗАПРОС К GEMINI (БЕЗ SDK) ---
 async def get_ai_generated_prompt(image_url):
     try:
-        # 1. Качаем картинку
-        img_data = requests.get(image_url, timeout=10).content
-        import base64
-        base64_image = base64.b64encode(img_data).decode('utf-8')
-
-        # 2. Формируем запрос к API v1 (стабильный путь)
-        url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        img_resp = requests.get(image_url, timeout=10)
+        if img_resp.status_code != 200: return None
+        
+        base64_image = base64.b64encode(img_resp.content).decode('utf-8')
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        
         payload = {
             "contents": [{
                 "parts": [
-                    {"text": "Write a professional AI art prompt for this image. English only. No preamble."},
+                    {"text": "Write a highly detailed AI art prompt for this image. English only, no preamble, no quotes."},
                     {"inline_data": {"mime_type": "image/jpeg", "data": base64_image}}
                 ]
-            }]
+            }],
+            "safetySettings": [ # Отключаем излишнюю цензуру для артов
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+            ]
         }
         
         r = requests.post(url, json=payload, timeout=20)
         res_json = r.json()
         
-        # Извлекаем текст
-        prompt = res_json['candidates'][0]['content']['parts'][0]['text']
-        return prompt.strip()
+        if 'candidates' in res_json and res_json['candidates'][0].get('content'):
+            return res_json['candidates'][0]['content']['parts'][0]['text'].strip()
+        else:
+            logging.error(f"Gemini rejection or error: {res_json}")
+            return None
     except Exception as e:
-        logging.error(f"Gemini direct error: {e}")
+        logging.error(f"Gemini detail error: {e}")
         return None
 
 def escape_md(text):
@@ -55,15 +62,16 @@ def escape_md(text):
     return text
 
 async def post_now():
-    subs = ['Midjourney', 'StableDiffusion', 'AIArt']
+    subs = ['Midjourney', 'AIArt', 'StableDiffusion']
     url = f"https://www.reddit.com/r/{random.choice(subs)}/hot.json?limit=10"
-    headers = {'User-Agent': f'BananahBot/11.0_{random.randint(1,999)}'}
+    headers = {'User-Agent': 'Mozilla/5.0'}
     try:
         r = requests.get(url, headers=headers, timeout=10)
         posts = r.json().get('data', {}).get('children', [])
         random.shuffle(posts)
         for post in posts:
-            img_url = post.get('data', {}).get('url', '')
+            data = post.get('data', {})
+            img_url = data.get('url', '')
             if any(img_url.lower().endswith(ext) for ext in ['.jpg', '.png', '.jpeg']):
                 if img_url not in posted_urls:
                     prompt = await get_ai_generated_prompt(img_url)
@@ -72,27 +80,26 @@ async def post_now():
                         caption = f"🖼 *Visual AI Analysis*\n\n👤 *Prompt:* `{escape_md(prompt)}`"
                         photo = types.BufferedInputFile(requests.get(img_url).content, "art.jpg")
                         await bot.send_photo(CHANNEL_ID, photo, caption=caption)
-                        logging.info("!!! POSTED SUCCESSFULLY !!!")
+                        logging.info("SUCCESS: Posted to Telegram")
                         return True
     except Exception as e:
-        logging.error(f"Reddit error: {e}")
+        logging.error(f"Post error: {e}")
     return False
 
-# --- WEB SERVER ---
 async def handle(request):
-    return web.Response(text="Service Active")
+    return web.Response(text="Bot is Live")
 
 async def on_startup(app):
-    logging.info("Starting up... waiting for old instances to die.")
-    await asyncio.sleep(15) # Увеличили паузу для Render
+    logging.info("Waiting for old instance clean-up...")
+    await asyncio.sleep(20) # Увеличили до 20 секунд
     
+    # Жесткий сброс вебхука
     await bot.delete_webhook(drop_pending_updates=True)
     
     scheduler.add_job(post_now, 'interval', minutes=25)
     scheduler.start()
     
     asyncio.create_task(post_now())
-    # skip_updates=True игнорирует сообщения, накопленные во время "конфликта"
     asyncio.create_task(dp.start_polling(bot, skip_updates=True))
 
 async def create_app():
