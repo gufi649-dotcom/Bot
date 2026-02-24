@@ -12,11 +12,11 @@ from aiohttp import web
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # --- КОНФИГУРАЦИЯ ---
+# Совет: Лучше сбросить токен в BotFather и вставить новый здесь
 API_TOKEN = '8309438145:AAEGBACLyLh2H_OyUk6ScDYpvNJU9_OaQyQ'
 GEMINI_API_KEY = 'AIzaSyAJngwLCzOjjqFe_EkxQctwm1QT-vZEbrc'
 CHANNEL_ID = '@iPromt_AI'
 
-# Настройка Gemini
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
 
@@ -33,8 +33,8 @@ async def get_ai_generated_prompt(image_url):
         image_parts = [{"mime_type": "image/jpeg", "data": response.content}]
         instruction = (
             "Analyze this image and write a professional, highly detailed AI art prompt. "
-            "Describe the subject, clothing, environment, lighting, camera lens and aesthetic. "
-            "Output ONLY the English prompt. No introductions."
+            "Describe the subject, clothing, background, lighting, and camera settings. "
+            "Output ONLY the English prompt."
         )
         ai_response = model.generate_content([instruction, image_parts[0]])
         return ai_response.text.strip()
@@ -48,44 +48,49 @@ def escape_md(text):
     return text
 
 async def post_now():
-    subs = ['AiGeminiPhotoPrompts', 'PromptHero', 'StableDiffusion', 'midjourney']
-    url = f"https://www.reddit.com/r/{random.choice(subs)}/hot.json?limit=30"
-    headers = {'User-agent': 'Bananah-Vision-Bot-v2'}
+    # Список сабреддитов, где точно есть картинки
+    subs = ['Midjourney', 'StableDiffusion', 'AIArt', 'DigitalArt']
+    sub = random.choice(subs)
+    # Используем старый добрый .rss или подставляем другой User-Agent
+    url = f"https://www.reddit.com/r/{sub}/hot.json?limit=50"
+    headers = {'User-Agent': f'Mozilla/5.0 (Windows NT 10.0; Win64; x64) {random.randint(1,100)}'}
     
     try:
-        response = requests.get(url, headers=headers).json()
-        # ПРОВЕРКА НАЛИЧИЯ ДАННЫХ (Исправляет ошибку 'data')
-        if 'data' not in response or 'children' not in response['data']:
-            logging.error("Reddit API returned no data")
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code != 200:
+            logging.error(f"Reddit Error {response.status_code}")
+            return False
+            
+        data = response.json()
+        posts = data.get('data', {}).get('children', [])
+        
+        if not posts:
+            logging.error("No posts found on Reddit")
             return False
 
-        posts = response['data']['children']
         random.shuffle(posts)
-        
         for post in posts:
-            data = post.get('data', {})
-            img_url = data.get('url', '')
+            p_data = post.get('data', {})
+            img_url = p_data.get('url', '')
             
-            if data.get('post_hint') == 'image' and img_url not in posted_urls:
-                smart_prompt = await get_ai_generated_prompt(img_url)
-                
-                if smart_prompt:
-                    posted_urls.add(img_url)
-                    caption = (
-                        f"🖼 *Visual AI Analysis*\n\n"
-                        f"👤 *Detailed Prompt:* \n`{escape_md(smart_prompt)}`\n\n"
-                        f"✨ @iPromt\\_AI\n"
-                        f"\\#ai \\#prompts \\#gemini"
-                    )
-                    
-                    kb = [[types.InlineKeyboardButton(text="📋 Скопировать", callback_data="copy")]]
-                    img_res = requests.get(img_url)
-                    photo = types.BufferedInputFile(img_res.content, "art.jpg")
-                    # Сначала удаляем вебхуки, чтобы избежать конфликтов
-                    await bot.delete_webhook(drop_pending_updates=True)
-                    await bot.send_photo(CHANNEL_ID, photo, caption=caption, 
-                                         reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb))
-                    return True
+            # Проверяем, что это прямая ссылка на картинку
+            if any(img_url.endswith(ext) for ext in ['.jpg', '.png', '.jpeg']):
+                if img_url not in posted_urls:
+                    smart_prompt = await get_ai_generated_prompt(img_url)
+                    if smart_prompt:
+                        posted_urls.add(img_url)
+                        caption = (
+                            f"🖼 *Visual AI Analysis*\n\n"
+                            f"👤 *Detailed Prompt:* \n`{escape_md(smart_prompt)}`\n\n"
+                            f"✨ @iPromt\\_AI\n"
+                            f"\\#ai \\#prompts \\#gemini"
+                        )
+                        kb = [[types.InlineKeyboardButton(text="📋 Скопировать", callback_data="copy")]]
+                        img_res = requests.get(img_url)
+                        photo = types.BufferedInputFile(img_res.content, "art.jpg")
+                        await bot.send_photo(CHANNEL_ID, photo, caption=caption, 
+                                             reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb))
+                        return True
     except Exception as e:
         logging.error(f"Main Loop error: {e}")
     return False
@@ -108,13 +113,16 @@ async def main():
     await runner.setup()
     await web.TCPSite(runner, '0.0.0.0', int(os.environ.get("PORT", 10000))).start()
 
-    # Удаляем зависшие обновления перед стартом (ВАЖНО для фикса Conflict)
+    # КРИТИЧЕСКИ ВАЖНО для исправления Conflict:
     await bot.delete_webhook(drop_pending_updates=True)
     
-    scheduler.add_job(post_now, 'interval', minutes=20)
+    scheduler.add_job(post_now, 'interval', minutes=30)
     scheduler.start()
-    await post_now()
-    await dp.start_polling(bot)
+    
+    # Запускаем первую попытку через 5 секунд, чтобы сервер успел "продышаться"
+    asyncio.create_task(post_now())
+    
+    await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == '__main__':
     asyncio.run(main())
