@@ -18,9 +18,8 @@ CHANNEL_ID = '@iPromt_AI'
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Настройка Gemini
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+# ПРИНУДИТЕЛЬНАЯ НАСТРОЙКА НА v1
+genai.configure(api_key=GEMINI_API_KEY, transport='rest') # Используем REST для стабильности
 
 bot = Bot(token=API_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN_V2))
 dp = Dispatcher()
@@ -32,15 +31,21 @@ def escape_md(text):
     return text
 
 async def get_ai_generated_prompt(image_url):
+    """Получение промпта с жестким указанием версии модели"""
     try:
         response = requests.get(image_url, timeout=15)
         if response.status_code != 200:
             return None
         
+        # Переинициализируем модель внутри функции для обновления контекста, если нужно
+        # Используем полное имя модели
+        model = genai.GenerativeModel(model_name='models/gemini-1.5-flash')
+        
         img_data = [{'mime_type': 'image/jpeg', 'data': response.content}]
-        prompt_text = "Write a one-sentence Midjourney artistic prompt for this image. English only, no intros."
+        prompt_text = "Create a high-quality Midjourney prompt for this image. English only, no intro."
         
         result = model.generate_content([prompt_text, img_data[0]])
+        
         if result and result.text:
             return result.text.strip()
         return None
@@ -52,44 +57,36 @@ async def post_now():
     logger.info("Reddit Sweep Started...")
     subs = ['Midjourney', 'AIArt', 'StableDiffusion', 'ImaginaryLandscapes']
     target_sub = random.choice(subs)
-    
-    # Расширенный User-Agent, чтобы Reddit не ругался
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'
     }
     
     try:
         r = requests.get(f"https://www.reddit.com/r/{target_sub}/hot.json?limit=15", headers=headers, timeout=15)
-        
         if r.status_code != 200:
-            logger.warning(f"Reddit returned status {r.status_code}. Possible rate limit.")
+            logger.warning(f"Reddit Error {r.status_code}")
             return False
 
-        data = r.json() # Здесь была ошибка, если Reddit вернул не JSON
-        posts = data.get('data', {}).get('children', [])
-        
-        if not posts:
-            logger.warning("No posts found in Reddit response.")
-            return False
-
+        posts = r.json().get('data', {}).get('children', [])
         random.shuffle(posts)
         
         for post in posts:
             img_url = post['data'].get('url', '')
             if any(img_url.lower().endswith(ext) for ext in ['.jpg', '.png', '.jpeg']):
+                logger.info(f"Analyzing image: {img_url}")
                 prompt = await get_ai_generated_prompt(img_url)
                 if prompt:
                     caption = f"🖼 *Visual AI Analysis* \(r/{target_sub}\)\n\n👤 *Prompt:* `{escape_md(prompt)}`"
                     photo_resp = requests.get(img_url)
                     photo = types.BufferedInputFile(photo_resp.content, filename="image.jpg")
                     await bot.send_photo(CHANNEL_ID, photo, caption=caption)
-                    logger.info("SUCCESS: Post sent to Telegram!")
+                    logger.info("SUCCESS: Post sent!")
                     return True
+        logger.warning("No new images found in this sweep.")
     except Exception as e:
         logger.error(f"Post error: {e}")
     return False
 
-# --- WEB SERVER ---
 async def handle(request):
     return web.Response(text="Bot is Live")
 
@@ -102,14 +99,10 @@ async def main():
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
 
-    # 1. Сначала удаляем вебхук
     await bot.delete_webhook(drop_pending_updates=True)
-    
-    # 2. Ждем 60 секунд. Это ВАЖНО, чтобы старая копия на Render умерла.
     logger.info("Waiting 60s for old sessions to expire...")
     await asyncio.sleep(60)
 
-    # 3. Запускаем задачи
     scheduler.add_job(post_now, 'interval', minutes=25)
     scheduler.start()
     
