@@ -18,20 +18,26 @@ CHANNEL_ID = os.getenv("CHANNEL_ID")
 if not API_TOKEN or not GEMINI_API_KEY or not CHANNEL_ID:
     raise ValueError("BOT_TOKEN, GEMINI_API_KEY или CHANNEL_ID не найдены в Environment Variables")
 
-# Преобразуем CHANNEL_ID в int (для канала Telegram)
-CHANNEL_ID = int(CHANNEL_ID)
+CHANNEL_ID = int(CHANNEL_ID)  # для канала Telegram
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Настройка Gemini API
 genai.configure(api_key=GEMINI_API_KEY)
 
 bot = Bot(token=API_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
 scheduler = AsyncIOScheduler()
 
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/118.0.5993.118 Safari/537.36",
+    "Accept": "application/json",
+    "Connection": "keep-alive"
+}
+
 async def get_ai_prompt(image_url):
-    """Генерируем короткий prompt для Midjourney через Gemini API"""
+    """Генерируем короткий prompt через Gemini API"""
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(image_url, timeout=15) as resp:
@@ -51,21 +57,21 @@ async def get_ai_prompt(image_url):
         return None
 
 async def post_now():
-    """Берём случайный пост с Reddit и публикуем его в канал"""
+    """Публикуем случайный пост в канал"""
     logger.info("Запуск задачи post_now")
 
-    subs = ["Midjourney", "AIArt", "StableDiffusion"]
+    subs = ["EarthPorn"]  # публичный сабреддит для теста
     sub = random.choice(subs)
-    headers = {"User-Agent": "Mozilla/5.0"}
 
     try:
         url = f"https://www.reddit.com/r/{sub}/hot.json?limit=20"
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=10) as r:
+            async with session.get(url, headers=HEADERS, timeout=10) as r:
                 if r.status != 200:
                     logger.warning(f"Reddit вернул статус {r.status}")
                     return
                 data = await r.json()
+
         posts = data.get("data", {}).get("children", [])
         for post in posts:
             img = post["data"].get("url")
@@ -96,13 +102,13 @@ async def main():
     await site.start()
     logger.info(f"Web server запущен на порту {port}")
 
-    # Удаляем webhook, если был
+    # Удаляем webhook
     await bot.delete_webhook(drop_pending_updates=True)
 
-    # Запускаем задачу сразу при старте
+    # Первый пост сразу
     asyncio.create_task(post_now())
 
-    # APScheduler для периодической публикации каждые 25 минут
+    # APScheduler на 25 минут
     scheduler.add_job(lambda: asyncio.create_task(post_now()), "interval", minutes=25)
     scheduler.start()
     logger.info("Scheduler запущен")
