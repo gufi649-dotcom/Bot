@@ -1,123 +1,183 @@
-import asyncio
-import logging
 import os
+import logging
+import asyncio
 import random
-import requests
+from aiohttp import web, ClientSession
+from aiogram import Bot, Dispatcher, F
+from aiogram.enums import ParseMode
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import google.generativeai as genai
 
-from aiogram import Bot, Dispatcher
-from aiogram.enums import ParseMode
-from aiogram.client.default import DefaultBotProperties
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiohttp import web
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-
-# ====== НАСТРОЙКИ ======
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+dp = Dispatcher()
 
 genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel("gemini-1.5-flash")
 
-bot = Bot(
-    token=BOT_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-)
+app = web.Application()
 
-dp = Dispatcher()
-scheduler = AsyncIOScheduler()
+# Тренды про людей и пары
+TRENDS = [
+    "парень",
+    "девушка",
+    "пара",
+    "люди",
+    "молодая девушка",
+    "молодой парень",
+    "романтическая пара",
+    "группа людей",
+    "друзья",
+    "семья"
+]
 
-# ====== ГЕНЕРАЦИЯ ПРОМПТА ======
+# Запасные изображения
+FALLBACK_IMAGES = [
+    "https://picsum.photos/1024/1024",
+    "https://source.unsplash.com/1024x1024/?people",
+    "https://source.unsplash.com/1024x1024/?portrait",
+    "https://source.unsplash.com/1024x1024/?couple",
+    "https://source.unsplash.com/1024x1024/?friends",
+]
 
-def generate_prompt():
+
+async def get_image():
     try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        url = "https://meme-api.com/gimme/StableDiffusion"
+        async with ClientSession() as session:
+            async with session.get(url) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("url")
+                else:
+                    logger.warning(f"Reddit статус {resp.status}")
+    except Exception as e:
+        logger.error(f"Ошибка при получении изображения: {e}")
 
+    logger.info("Используем резервное изображение")
+    return random.choice(FALLBACK_IMAGES)
+
+
+async def generate_prompt():
+    trend = random.choice(TRENDS)
+    try:
         response = model.generate_content(
-            "Create a viral Midjourney prompt for AI art. "
-            "Make it short, detailed, cinematic, trending."
+            f"""
+Создай ультрареалистичный AI промпт для Midjourney / Stable Diffusion по теме: {trend}.
+Следуй этим инструкциям:
+
+ВНЕШНОСТЬ:
+- Использовать лицо с референса (identity lock)
+- Сохранить форму глаз, губ, носа, пропорции, естественную асимметрию лица
+- Молодая кожа, большие глаза, естественный блеск губ, живая текстура кожи
+- Сохраняется исходная прическа
+
+ОДЕЖДА И ДЕТАЛИ:
+- Домашняя одежда или пижама, мягкая, струящаяся
+- Акцент на руках или предметах (например, зажигалка, букет)
+- Композиция: крупный план объекта на переднем плане, фон слегка размытый
+
+СВЕТ И ЦВЕТ:
+- Естественный свет или один источник (например, пламя, окно)
+- Мягкий свет, драматичные тени, отражения в глазах
+- Глубокие тени, контраст и подсветка объекта
+
+КАМЕРА И СТИЛЬ:
+- Close-up или крупный план
+- Shallow depth of field, акцент на главном объекте
+- Cinematic, фотореализм, 8k, высокая детализация
+- Мягкое боке, эффект случайного красивого кадра
+
+ПОЗА И КОМПОЗИЦИЯ:
+- Передний план резкий, задний слегка размытый
+- Акцент на объекте, центральная композиция
+- Если есть отражения, лицо и тело слегка вне фокуса
+
+НЕГАТИВНЫЙ:
+- Изменение лица, пластик, мультяшность
+- Лишние предметы и люди
+- Резкий фон, пересвет, агрессивная ретушь
+- Неестественные пропорции или деформации
+- Лишние источники света
+
+Верни только готовый промпт, без лишнего текста.
+"""
         )
-
-        return response.text.strip()
-
+        return getattr(response, "text", "").strip() or f"{trend}, ultra realistic, cinematic lighting, 8k, shallow depth of field"
     except Exception as e:
         logger.error(f"Ошибка Gemini: {e}")
-        return "cyberpunk futuristic city, neon lights, ultra detailed, 8k"
+        return f"{trend}, ultra realistic, cinematic lighting, 8k, shallow depth of field"
 
-# ====== ПОЛУЧЕНИЕ КАРТИНКИ ======
 
-def get_image():
-    images = [
-        "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee",
-        "https://images.unsplash.com/photo-1518770660439-4636190af475",
-        "https://images.unsplash.com/photo-1535223289827-42f1e9919769"
-    ]
-    return random.choice(images)
-
-# ====== ПУБЛИКАЦИЯ ======
-
-async def post_now():
-    logger.info("Создаю пост")
-
-    image = get_image()
-    prompt = generate_prompt()
-
-    keyboard = InlineKeyboardMarkup(
+def prompt_keyboard(prompt):
+    return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="📋 Copy Prompt",
-                    url="https://t.me/share/url?text=" + prompt
+                    text="📋 Скопировать промпт",
+                    switch_inline_query=prompt
                 )
             ]
         ]
     )
 
+
+async def post_now():
+    logger.info("Создаю пост")
+
+    image_url = await get_image()
+    prompt = await generate_prompt()
+
+    caption = f"""
+🔥 <b>Viral AI Prompt</b>
+
+<code>{prompt}</code>
+
+🚀 Используй в Midjourney / SD
+"""
+
     try:
         await bot.send_photo(
-            chat_id=CHANNEL_ID,
-            photo=image,
-            caption=f"<b>🔥 AI Prompt</b>\n\n<code>{prompt}</code>",
-            reply_markup=keyboard
+            CHANNEL_ID,
+            photo=image_url,
+            caption=caption,
+            reply_markup=prompt_keyboard(prompt)
         )
-
-        logger.info("Пост опубликован")
-
+        logger.info(f"Пост отправлен с промптом: {prompt[:50]}...")
     except Exception as e:
         logger.error(f"Ошибка отправки: {e}")
 
-# ====== СЕРВЕР ДЛЯ RENDER ======
 
-async def handle(request):
-    return web.Response(text="Bot running")
-
-async def main():
-    app = web.Application()
-    app.router.add_get("/", handle)
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-
-    port = int(os.environ.get("PORT", 10000))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-
-    logger.info("Сервер запущен")
-
-    await bot.delete_webhook(drop_pending_updates=True)
-
+@dp.message(F.text == "/post")
+async def manual_post(message: Message):
     await post_now()
+    await message.answer("Пост опубликован")
 
-    scheduler.add_job(post_now, "interval", minutes=30)
-    scheduler.start()
 
+async def scheduler():
+    sched = AsyncIOScheduler()
+    sched.add_job(lambda: asyncio.create_task(post_now()), "interval", minutes=30)
+    sched.start()
     logger.info("Планировщик запущен")
 
-    await dp.start_polling(bot)
+
+async def handle(request):
+    return web.Response(text="BOT WORKING")
+
+
+async def on_startup(app):
+    await scheduler()
+    asyncio.create_task(dp.start_polling(bot))
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    logger.info("Сервер запущен")
+    app.on_startup.append(on_startup)
+    web.run_app(app, port=int(os.getenv("PORT", 10000)))
