@@ -12,15 +12,11 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiohttp import web
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+# ====== НАСТРОЙКИ ======
 
-# ================= НАСТРОЙКИ =================
-
-API_TOKEN = os.getenv("BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
-
-if not API_TOKEN:
-    raise ValueError("BOT_TOKEN не найден")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -28,74 +24,46 @@ logger = logging.getLogger(__name__)
 genai.configure(api_key=GEMINI_API_KEY)
 
 bot = Bot(
-    token=API_TOKEN,
+    token=BOT_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML)
 )
 
 dp = Dispatcher()
 scheduler = AsyncIOScheduler()
 
-
-# ================= ГЕНЕРАЦИЯ ПРОМПТА =================
+# ====== ГЕНЕРАЦИЯ ПРОМПТА ======
 
 def generate_prompt():
     try:
-        model = genai.GenerativeModel("gemini-pro")
+        model = genai.GenerativeModel("gemini-1.5-flash")
 
         response = model.generate_content(
-            "Create a short viral Midjourney prompt for futuristic AI art. "
-            "Make it detailed, cinematic, trending on ArtStation."
+            "Create a viral Midjourney prompt for AI art. "
+            "Make it short, detailed, cinematic, trending."
         )
 
         return response.text.strip()
 
     except Exception as e:
         logger.error(f"Ошибка Gemini: {e}")
-        return "futuristic cyberpunk city, cinematic lighting, ultra detailed, 8k"
+        return "cyberpunk futuristic city, neon lights, ultra detailed, 8k"
 
+# ====== ПОЛУЧЕНИЕ КАРТИНКИ ======
 
-# ================= REDDIT =================
+def get_image():
+    images = [
+        "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee",
+        "https://images.unsplash.com/photo-1518770660439-4636190af475",
+        "https://images.unsplash.com/photo-1535223289827-42f1e9919769"
+    ]
+    return random.choice(images)
 
-def get_image_from_reddit():
-    subs = ["Midjourney", "AIArt", "StableDiffusion"]
-    sub = random.choice(subs)
-
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
-
-    try:
-        url = f"https://old.reddit.com/r/{sub}/top.json?t=day&limit=20"
-        r = requests.get(url, headers=headers, timeout=10)
-
-        if r.status_code != 200:
-            logger.warning(f"Reddit статус {r.status_code}")
-            return None
-
-        posts = r.json()["data"]["children"]
-
-        for post in posts:
-            img = post["data"].get("url")
-            if img and img.endswith((".jpg", ".png", ".jpeg")):
-                return img
-
-    except Exception as e:
-        logger.error(f"Ошибка Reddit: {e}")
-
-    return None
-
-
-# ================= ПУБЛИКАЦИЯ =================
+# ====== ПУБЛИКАЦИЯ ======
 
 async def post_now():
-    logger.info("Создаю новый пост")
+    logger.info("Создаю пост")
 
-    image_url = get_image_from_reddit()
-
-    if not image_url:
-        logger.info("Используем резервное изображение")
-        image_url = "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee"
-
+    image = get_image()
     prompt = generate_prompt()
 
     keyboard = InlineKeyboardMarkup(
@@ -103,7 +71,7 @@ async def post_now():
             [
                 InlineKeyboardButton(
                     text="📋 Copy Prompt",
-                    switch_inline_query=prompt
+                    url="https://t.me/share/url?text=" + prompt
                 )
             ]
         ]
@@ -112,7 +80,7 @@ async def post_now():
     try:
         await bot.send_photo(
             chat_id=CHANNEL_ID,
-            photo=image_url,
+            photo=image,
             caption=f"<b>🔥 AI Prompt</b>\n\n<code>{prompt}</code>",
             reply_markup=keyboard
         )
@@ -122,12 +90,10 @@ async def post_now():
     except Exception as e:
         logger.error(f"Ошибка отправки: {e}")
 
-
-# ================= WEB SERVER ДЛЯ RENDER =================
+# ====== СЕРВЕР ДЛЯ RENDER ======
 
 async def handle(request):
-    return web.Response(text="Bot is running")
-
+    return web.Response(text="Bot running")
 
 async def main():
     app = web.Application()
@@ -144,15 +110,14 @@ async def main():
 
     await bot.delete_webhook(drop_pending_updates=True)
 
-    await post_now()  # пост сразу после запуска
+    await post_now()
 
-    scheduler.add_job(post_now, "interval", minutes=60)
+    scheduler.add_job(post_now, "interval", minutes=30)
     scheduler.start()
 
     logger.info("Планировщик запущен")
 
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
