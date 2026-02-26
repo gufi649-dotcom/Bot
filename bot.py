@@ -1,18 +1,26 @@
 import asyncio
 import logging
-import random
 import os
+import random
 import requests
 import google.generativeai as genai
+
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiohttp import web
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+
+# ================= НАСТРОЙКИ =================
 
 API_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
+
+if not API_TOKEN:
+    raise ValueError("BOT_TOKEN не найден")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -21,106 +29,101 @@ genai.configure(api_key=GEMINI_API_KEY)
 
 bot = Bot(
     token=API_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN)
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
 )
 
 dp = Dispatcher()
 scheduler = AsyncIOScheduler()
 
 
-# запасные промпты если AI не ответил
-fallback_prompts = [
-    "ultra realistic cyberpunk girl, neon lights, cinematic lighting, 8k",
-    "futuristic city at night, rain, neon reflections, ultra detailed",
-    "AI anime girl portrait, soft lighting, masterpiece, 4k",
-    "space traveler, cinematic shot, volumetric light, hyper realistic",
-    "cyberpunk samurai, glowing armor, epic composition"
-]
+# ================= ГЕНЕРАЦИЯ ПРОМПТА =================
 
-
-async def get_ai_prompt(image_url):
+def generate_prompt():
     try:
-        response = requests.get(image_url, timeout=15)
-        if response.status_code != 200:
-            return random.choice(fallback_prompts)
+        model = genai.GenerativeModel("gemini-pro")
 
-        model = genai.GenerativeModel("gemini-1.5-flash-latest")
+        response = model.generate_content(
+            "Create a short viral Midjourney prompt for futuristic AI art. "
+            "Make it detailed, cinematic, trending on ArtStation."
+        )
 
-        result = model.generate_content([
-            "Write a short Midjourney prompt describing this image.",
-            {
-                "mime_type": "image/jpeg",
-                "data": response.content
-            }
-        ])
-
-        if result.text:
-            return result.text.strip()
+        return response.text.strip()
 
     except Exception as e:
-        logger.error(e)
+        logger.error(f"Ошибка Gemini: {e}")
+        return "futuristic cyberpunk city, cinematic lighting, ultra detailed, 8k"
 
-    return random.choice(fallback_prompts)
 
+# ================= REDDIT =================
 
-async def get_reddit_image():
+def get_image_from_reddit():
     subs = ["Midjourney", "AIArt", "StableDiffusion"]
+    sub = random.choice(subs)
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (TelegramBot)"
+        "User-Agent": "Mozilla/5.0"
     }
 
-    for sub in subs:
-        try:
-            url = f"https://www.reddit.com/r/{sub}/hot.json?limit=10"
-            r = requests.get(url, headers=headers, timeout=10)
+    try:
+        url = f"https://old.reddit.com/r/{sub}/top.json?t=day&limit=20"
+        r = requests.get(url, headers=headers, timeout=10)
 
-            if r.status_code != 200:
-                continue
+        if r.status_code != 200:
+            logger.warning(f"Reddit статус {r.status_code}")
+            return None
 
-            posts = r.json()["data"]["children"]
+        posts = r.json()["data"]["children"]
 
-            for post in posts:
-                img = post["data"].get("url")
+        for post in posts:
+            img = post["data"].get("url")
+            if img and img.endswith((".jpg", ".png", ".jpeg")):
+                return img
 
-                if img and img.endswith((".jpg", ".png", ".jpeg")):
-                    return img
+    except Exception as e:
+        logger.error(f"Ошибка Reddit: {e}")
 
-        except:
-            pass
+    return None
 
-    # если Reddit не дал картинку
-    return random.choice([
-        "https://images.unsplash.com/photo-1677442136019-21780ecad995",
-        "https://images.unsplash.com/photo-1682687982501-1e58ab814714"
-    ])
 
+# ================= ПУБЛИКАЦИЯ =================
 
 async def post_now():
     logger.info("Создаю новый пост")
 
-    image = await get_reddit_image()
-    prompt = await get_ai_prompt(image)
+    image_url = get_image_from_reddit()
 
-    caption = f"""
-🔥 AI IMAGE PROMPT
+    if not image_url:
+        logger.info("Используем резервное изображение")
+        image_url = "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee"
 
-`{prompt}`
+    prompt = generate_prompt()
 
-Use this prompt in Midjourney / Leonardo / SDXL
-"""
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📋 Copy Prompt",
+                    switch_inline_query=prompt
+                )
+            ]
+        ]
+    )
 
     try:
         await bot.send_photo(
             chat_id=CHANNEL_ID,
-            photo=image,
-            caption=caption
+            photo=image_url,
+            caption=f"<b>🔥 AI Prompt</b>\n\n<code>{prompt}</code>",
+            reply_markup=keyboard
         )
+
         logger.info("Пост опубликован")
 
     except Exception as e:
         logger.error(f"Ошибка отправки: {e}")
 
+
+# ================= WEB SERVER ДЛЯ RENDER =================
 
 async def handle(request):
     return web.Response(text="Bot is running")
@@ -141,9 +144,9 @@ async def main():
 
     await bot.delete_webhook(drop_pending_updates=True)
 
-    await post_now()
+    await post_now()  # пост сразу после запуска
 
-    scheduler.add_job(post_now, "interval", hours=3)
+    scheduler.add_job(post_now, "interval", minutes=60)
     scheduler.start()
 
     logger.info("Планировщик запущен")
