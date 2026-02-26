@@ -4,33 +4,19 @@ import logging
 import random
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message
 from aiogram.enums import ParseMode
 from aiogram.client.bot import DefaultBotProperties
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from google import genai
 
-# =========================
-# CONFIG
-# =========================
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 PORT = int(os.getenv("PORT", 10000))
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# =========================
-# GEMINI (NEW SDK)
-# =========================
-
-genai_client = genai.Client(api_key=GEMINI_API_KEY)
-
-# =========================
-# TELEGRAM
-# =========================
 
 bot = Bot(
     token=BOT_TOKEN,
@@ -39,147 +25,106 @@ bot = Bot(
 
 dp = Dispatcher()
 
-# =========================
-# PROMPT TRENDS
-# =========================
+genai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 TRENDS = [
-    "романтическая пара дома",
-    "девушка в зеркальном селфи",
-    "парень в мягком дневном свете",
-    "домашняя фотосессия",
-    "уютная сцена в спальне",
+    "девушка портрет",
+    "парень портрет",
+    "люди lifestyle",
+    "пара романтика",
+    "фото девушки дома",
+    "парень у окна",
+    "люди в городе",
+    "девушка зеркало селфи",
+    "пара уютная атмосфера",
 ]
-
-# =========================
-# PROMPT GENERATOR
-# =========================
 
 async def generate_prompt():
     trend = random.choice(TRENDS)
 
+    prompt_text = f"""
+Создай ультрареалистичный AI prompt для генерации фотографии.
+Тема: {trend}
+
+Опиши:
+— внешность
+— позу
+— одежду
+— свет
+— камеру
+— атмосферу
+— негативный промпт
+
+Сделай максимально детально.
+"""
+
     try:
         response = genai_client.models.generate_content(
             model="gemini-1.5-flash",
-            contents=f"""
-Создай ультрареалистичный фото-промпт для Midjourney / Stable Diffusion.
-
-Тема: {trend}
-
-Обязательно:
-— identity lock лица
-— естественная кожа
-— живая текстура
-— cinematic lighting
-— shallow depth of field
-— фотореализм
-— 8k
-— мягкий дневной свет
-— детальная композиция
-— negative prompt в конце
-
-Верни только готовый промпт.
-"""
+            contents=prompt_text
         )
 
-        return response.text.strip()
+        return response.text
 
     except Exception as e:
-        logger.error(f"Gemini error: {e}")
-        return f"{trend}, ultra realistic, cinematic lighting, 8k, shallow depth of field"
+        logger.error(e)
+        return trend
 
-# =========================
-# KEYBOARD
-# =========================
 
-def prompt_keyboard(prompt):
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="📋 Скопировать промпт",
-                    switch_inline_query=prompt
-                )
-            ]
-        ]
-    )
-
-# =========================
-# POST FUNCTION
-# =========================
-
-async def post_now():
-    logger.info("Создаю пост")
-
+async def post():
     prompt = await generate_prompt()
 
-    caption = f"""
-🔥 <b>Viral AI Prompt</b>
+    text = f"""
+🔥 AI PROMPT
 
 <code>{prompt}</code>
-
-🚀 Используй в Midjourney / SD
 """
 
-    try:
-        await bot.send_message(
-            CHANNEL_ID,
-            caption,
-            reply_markup=prompt_keyboard(prompt)
-        )
-        logger.info("Пост отправлен")
+    await bot.send_message(CHANNEL_ID, text)
 
-    except Exception as e:
-        logger.error(f"Ошибка отправки: {e}")
 
-# =========================
-# COMMAND
-# =========================
+@dp.message(F.text == "/start")
+async def start(message: Message):
+    await message.answer("Бот работает")
+
 
 @dp.message(F.text == "/post")
 async def manual_post(message: Message):
-    await post_now()
-    await message.answer("Пост опубликован")
+    await post()
+    await message.answer("Пост отправлен")
 
-# =========================
-# SCHEDULER
-# =========================
 
-async def start_scheduler():
+async def scheduler_start():
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(lambda: asyncio.create_task(post_now()), "interval", minutes=30)
+    scheduler.add_job(lambda: asyncio.create_task(post()), "interval", minutes=30)
     scheduler.start()
-    logger.info("Планировщик запущен")
+    logger.info("Scheduler started")
 
-# =========================
-# HEALTH CHECK
-# =========================
 
 async def health(request):
-    return web.Response(text="BOT IS RUNNING")
+    return web.Response(text="OK")
 
-# =========================
-# STARTUP
-# =========================
 
-async def on_startup(app):
-    logger.info("Удаляем webhook...")
+async def start_bot(app):
+    logger.info("Удаляем webhook")
+
     await bot.delete_webhook(drop_pending_updates=True)
 
-    await start_scheduler()
+    await scheduler_start()
+
     asyncio.create_task(dp.start_polling(bot))
 
-# =========================
-# MAIN
-# =========================
 
 def main():
     app = web.Application()
     app.router.add_get("/", health)
-    app.on_startup.append(on_startup)
+    app.router.add_head("/", health)
+    app.on_startup.append(start_bot)
 
-    logger.info("Сервер запущен")
+    logger.info("Server started")
+
     web.run_app(app, port=PORT)
+
 
 if __name__ == "__main__":
     main()
