@@ -6,8 +6,9 @@ from aiohttp import web, ClientSession
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
+from aiogram.client.bot import DefaultBotProperties
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-import google.generativeai as genai
+import google.generativeai as genai  # можно заменить на google.genai в будущем
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -16,7 +17,11 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+# ⚡ Инициализация бота под aiogram 3.7+
+bot = Bot(
+    token=BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
 dp = Dispatcher()
 
 genai.configure(api_key=GEMINI_API_KEY)
