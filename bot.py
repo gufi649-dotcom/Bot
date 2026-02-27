@@ -1,130 +1,85 @@
-import os
 import asyncio
-import logging
-import random
-from aiohttp import web
-from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message
-from aiogram.enums import ParseMode
-from aiogram.client.bot import DefaultBotProperties
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from google import genai
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+import os
+import aiohttp
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import CommandStart
+import google.generativeai as genai
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-PORT = int(os.getenv("PORT", 10000))
 
-bot = Bot(
-    token=BOT_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-)
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel("gemini-1.5-pro")
 
+SYSTEM_PROMPT = """
+You are an elite AI Prompt Analyzer used by professional photography studios.
+
+Analyze the image with maximum precision and produce a studio-level prompt.
+
+OUTPUT:
+
+1. ULTRA DETAILED PROMPT
+2. COMPOSITION
+3. SUBJECT ANALYSIS
+4. FACE MICRO DETAILS
+5. HAIR STRUCTURE
+6. CLOTHING
+7. LIGHTING BLUEPRINT
+8. ENVIRONMENT
+9. CAMERA SIMULATION
+10. GENERATION SETTINGS
+"""
+
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-genai_client = genai.Client(api_key=GEMINI_API_KEY)
 
-TRENDS = [
-    "девушка портрет",
-    "парень портрет",
-    "люди lifestyle",
-    "пара романтика",
-    "фото девушки дома",
-    "парень у окна",
-    "люди в городе",
-    "девушка зеркало селфи",
-    "пара уютная атмосфера",
-]
+@dp.message(CommandStart())
+async def start(message: types.Message):
+    await message.answer(
+        "Отправь фотографию — я сделаю профессиональный prompt-анализ."
+    )
 
-async def generate_prompt():
-    trend = random.choice(TRENDS)
 
-    prompt_text = f"""
-Создай ультрареалистичный AI prompt для генерации фотографии.
-Тема: {trend}
+async def download_file(url):
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            return await resp.read()
 
-Опиши:
-— внешность
-— позу
-— одежду
-— свет
-— камеру
-— атмосферу
-— негативный промпт
 
-Сделай максимально детально.
-"""
+@dp.message(lambda message: message.photo)
+async def analyze_photo(message: types.Message):
+    await message.answer("Анализирую изображение...")
+
+    photo = message.photo[-1]
+    file = await bot.get_file(photo.file_id)
+
+    file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
+    image_bytes = await download_file(file_url)
 
     try:
-        response = genai_client.models.generate_content(
-            model="gemini-1.5-flash",
-            contents=prompt_text
-        )
+        response = model.generate_content([
+            SYSTEM_PROMPT,
+            {
+                "mime_type": "image/jpeg",
+                "data": image_bytes
+            }
+        ])
 
-        return response.text
+        result = response.text
+
+        for i in range(0, len(result), 4000):
+            await message.answer(result[i:i+4000])
 
     except Exception as e:
-        logger.error(e)
-        return trend
+        await message.answer(f"Ошибка анализа: {e}")
 
 
-async def post():
-    prompt = await generate_prompt()
-
-    text = f"""
-🔥 AI PROMPT
-
-<code>{prompt}</code>
-"""
-
-    await bot.send_message(CHANNEL_ID, text)
-
-
-@dp.message(F.text == "/start")
-async def start(message: Message):
-    await message.answer("Бот работает")
-
-
-@dp.message(F.text == "/post")
-async def manual_post(message: Message):
-    await post()
-    await message.answer("Пост отправлен")
-
-
-async def scheduler_start():
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(lambda: asyncio.create_task(post()), "interval", minutes=30)
-    scheduler.start()
-    logger.info("Scheduler started")
-
-
-async def health(request):
-    return web.Response(text="OK")
-
-
-async def start_bot(app):
-    logger.info("Удаляем webhook")
-
-    await bot.delete_webhook(drop_pending_updates=True)
-
-    await scheduler_start()
-
-    asyncio.create_task(dp.start_polling(bot))
-
-
-def main():
-    app = web.Application()
-    app.router.add_get("/", health)
-    app.router.add_head("/", health)
-    app.on_startup.append(start_bot)
-
-    logger.info("Server started")
-
-    web.run_app(app, port=PORT)
+async def main():
+    print("Bot started")
+    await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
