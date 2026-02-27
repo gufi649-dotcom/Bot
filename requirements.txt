@@ -1,4 +1,3 @@
 aiogram
 aiohttp
-apscheduler
-google-genai
+google-generativeai
